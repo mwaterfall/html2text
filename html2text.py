@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""html2text: Turn HTML into equivalent Markdown-structured text."""
+"""html2text: Turn HTML into equivalent text (Markdown or plain text)."""
 __version__ = "3.200.3"
 __author__ = "Aaron Swartz (me@aaronsw.com)"
 __copyright__ = "(C) 2004-2008 Aaron Swartz. GNU GPL 3."
@@ -57,6 +57,9 @@ INLINE_LINKS = True
 # Number of pixels Google indents nested lists
 GOOGLE_LIST_INDENT = 36
 
+# Don't add markdown elements and output nicely for plain reading
+NO_MARKDOWN = False
+
 IGNORE_ANCHORS = False
 IGNORE_IMAGES = False
 IGNORE_EMPHASIS = False
@@ -81,6 +84,10 @@ unifiable = {'rsquo':"'", 'lsquo':"'", 'rdquo':'"', 'ldquo':'"',
 'ograve':'o', 'oacute':'o', 'ocirc':'o', 'otilde':'o', 'ouml':'o',
 'ugrave':'u', 'uacute':'u', 'ucirc':'u', 'uuml':'u',
 'lrm':'', 'rlm':''}
+
+# All types of possible quotation marks - this is used to strip any blockquotes
+# before we add our own quotes in, for plain text formatting
+all_quotes = u'\u0022\u0027\u00AB\u00BB\u2018\u2019\u201A\u201B\u201C\u201D\u201E\u201F\u2039\u203A'
 
 unifiable_n = {}
 
@@ -190,6 +197,7 @@ class HTML2Text(HTMLParser.HTMLParser):
         self.skip_internal_links = SKIP_INTERNAL_LINKS
         self.inline_links = INLINE_LINKS
         self.google_list_indent = GOOGLE_LIST_INDENT
+        self.no_markdown = NO_MARKDOWN
         self.ignore_links = IGNORE_ANCHORS
         self.ignore_images = IGNORE_IMAGES
         self.ignore_emphasis = IGNORE_EMPHASIS
@@ -197,6 +205,8 @@ class HTML2Text(HTMLParser.HTMLParser):
         self.ul_item_mark = '*'
         self.emphasis_mark = '_'
         self.strong_mark = '**'
+        self.hr_mark = '* * *'
+        self.blockquote_marks = ('> ', '')
 
         if out is None:
             self.out = self.outtextf
@@ -238,20 +248,39 @@ class HTML2Text(HTMLParser.HTMLParser):
         self.abbr_data = None  # last inner HTML (for abbr being defined)
         self.abbr_list = {}  # stack of abbreviations to write later
         self.baseurl = baseurl
+        self.last_tag_started = None # holds the most recent tag we entered
 
         try: del unifiable_n[name2cp('nbsp')]
         except KeyError: pass
         unifiable['nbsp'] = '&nbsp_place_holder;'
 
+    def normalise_options(self):
+        """ Configure options just before handle """
+        if self.no_markdown:
+            # Configure for plain text output
+            self.body_width = 0
+            self.escape_snob = False
+            self.ignore_links = True
+            self.ignore_images = True
+            self.ignore_emphasis = True
+            if self.unicode_snob:
+                self.ul_item_mark = u'\u2013'
+                self.blockquote_marks = (u'\u201C', u'\u201D')
+                self.hr_mark = u'\u2014\u2014\u2014'
+            else:
+                self.ul_item_mark = '-'
+                self.blockquote_marks = ('"', '"')
+                self.hr_mark = '---'
 
     def feed(self, data):
         data = data.replace("</' + 'script>", "</ignore>")
         HTMLParser.HTMLParser.feed(self, data)
 
     def handle(self, data):
+        self.normalise_options()
         self.feed(data)
-        self.feed("")
-        return self.optwrap(self.close())
+        self.feed("") 
+        return self.post_process(self.close())
 
     def outtextf(self, s):
         self.outtextlist.append(s)
@@ -380,6 +409,8 @@ class HTML2Text(HTMLParser.HTMLParser):
             attrs = {}
         else:
             attrs = dict(attrs)
+        if start:
+            self.last_tag_started = tag
 
         if self.google_doc:
             # the attrs parameter is empty for a closing tag. in addition, we
@@ -399,12 +430,13 @@ class HTML2Text(HTMLParser.HTMLParser):
 
         if hn(tag):
             self.p()
-            if start:
-                self.inheader = True
-                self.o(hn(tag)*"#" + ' ')
-            else:
-                self.inheader = False
-                return # prevent redundant emphasis marks on headers
+            if not self.no_markdown:
+                if start:
+                    self.inheader = True
+                    self.o(hn(tag)*"#" + ' ')
+                else:
+                    self.inheader = False
+                    return # prevent redundant emphasis marks on headers
 
         if tag in ['p', 'div']:
             if self.google_doc:
@@ -415,11 +447,12 @@ class HTML2Text(HTMLParser.HTMLParser):
             else:
                 self.p()
 
-        if tag == "br" and start: self.o("  \n")
+        if tag == "br" and start:
+            self.o("  \n")
 
         if tag == "hr" and start:
             self.p()
-            self.o("* * *")
+            self.o(self.hr_mark)
             self.p()
 
         if tag in ["head", "style", 'script']:
@@ -430,31 +463,40 @@ class HTML2Text(HTMLParser.HTMLParser):
             if start: self.style += 1
             else: self.style -= 1
 
-        if tag in ["body"]:
+        if tag == "body":
             self.quiet = 0 # sites like 9rules.com never close <head>
 
         if tag == "blockquote":
             if start:
-                self.p(); self.o('> ', 0, 1); self.start = 1
+                self.p(); 
+                self.o(self.blockquote_marks[0], 0, 1)
+                self.start = 1
                 self.blockquote += 1
             else:
+                if self.no_markdown:
+                    # remove whitespace and extra quotes before adding our own quotes
+                    self.rstrip_outtext(all_quotes)
+                self.o(self.blockquote_marks[1], 0, 1)
                 self.blockquote -= 1
                 self.p()
 
-        if tag in ['em', 'i', 'u'] and not self.ignore_emphasis: self.o(self.emphasis_mark)
-        if tag in ['strong', 'b'] and not self.ignore_emphasis: self.o(self.strong_mark)
-        if tag in ['del', 'strike', 's']:
+        if tag in ['em', 'i', 'u'] and not self.ignore_emphasis:
+            self.o(self.emphasis_mark)
+        if tag in ['strong', 'b'] and not self.ignore_emphasis: 
+            self.o(self.strong_mark)
+        if tag in ['del', 'strike', 's'] and not self.no_markdown:
             if start:
                 self.o("<"+tag+">")
             else:
                 self.o("</"+tag+">")
 
         if self.google_doc:
-            if not self.inheader:
+            if not self.inheader and not self.no_markdown:
                 # handle some font attributes, but leave headers clean
                 self.handle_emphasis(start, tag_style, parent_style)
 
-        if tag in ["code", "tt"] and not self.pre: self.o('`') #TODO: `` `this` ``
+        if tag in ["code", "tt"] and not self.pre: 
+            self.o('`') #TODO: `` `this` ``
         if tag == "abbr":
             if start:
                 self.abbr_title = None
@@ -597,8 +639,14 @@ class HTML2Text(HTMLParser.HTMLParser):
                 if not data.startswith("\n"):  # <pre>stuff...
                     data = "\n" + data
 
-            bq = (">" * self.blockquote)
-            if not (force and data and data[0] == ">") and self.blockquote: bq += " "
+            if puredata and self.last_tag_started == 'blockquote' and self.no_markdown:
+                data = data.lstrip(' \t\n\r'+all_quotes)
+
+            bq = ''
+            if not self.no_markdown:
+                bq = (">" * self.blockquote)
+                if not (force and data and data[0] == ">") and self.blockquote:
+                    bq += " "
 
             if self.pre:
                 if not self.list:
@@ -672,7 +720,7 @@ class HTML2Text(HTMLParser.HTMLParser):
                 self.o("[")
                 self.maybe_automatic_link = None
 
-        if not self.code and not self.pre:
+        if not self.code and not self.pre and not self.no_markdown:
             data = escape_md_section(data, snob=self.escape_snob)
         self.o(data, 1)
 
@@ -721,6 +769,15 @@ class HTML2Text(HTMLParser.HTMLParser):
             nest_count = int(style['margin-left'][:-2]) / self.google_list_indent
         return nest_count
 
+    def post_process(self, text):
+        if self.no_markdown:
+            # Tidy up for plain text response
+            text = remove_multi_blank_lines(text)
+        else:
+            # Wrapping does not work with plain text yet, as the criteria in skipwrap
+            # depends on markdown formatting and syntax
+            text = self.optwrap(text)
+        return text
 
     def optwrap(self, text):
         """Wrap all paragraphs in the provided text."""
@@ -750,6 +807,12 @@ class HTML2Text(HTMLParser.HTMLParser):
                     newlines += 1
         return result
 
+    def rstrip_outtext(self, additional_chars):
+        """ Remove whitespace at the end of the outtext """
+        if self.outtextlist:
+            self.outtextlist[-1] = self.outtextlist[-1].rstrip(' \r\t\n'+additional_chars)
+
+multi_blank_line_matcher = re.compile(r'([ \t]*\n){3,}')
 ordered_list_matcher = re.compile(r'\d+\.\s')
 unordered_list_matcher = re.compile(r'[-\*\+]\s')
 md_chars_matcher = re.compile(r"([\\\[\]\(\)])")
@@ -830,6 +893,9 @@ def escape_md_section(text, snob=False):
     text = md_dash_matcher.sub(r"\1\\\2", text)
     return text
 
+def remove_multi_blank_lines(text):
+    """ Ensure there can only be one blank line between text """
+    return multi_blank_line_matcher.sub('\n\n', text)
 
 def main():
     baseurl = ''
@@ -842,6 +908,8 @@ def main():
         default=IGNORE_ANCHORS, help="don't include any formatting for links")
     p.add_option("--ignore-images", dest="ignore_images", action="store_true",
         default=IGNORE_IMAGES, help="don't include any formatting for images")
+    p.add_option("--no-markdown", dest="no_markdown", action="store_true",
+        default=NO_MARKDOWN, help="don't use markdown syntax and display nicely as plain text")
     p.add_option("-g", "--google-doc", action="store_true", dest="google_doc",
         default=False, help="convert an html-exported Google Document")
     p.add_option("-d", "--dash-unordered-list", action="store_true", dest="ul_style_dash",
@@ -903,6 +971,7 @@ def main():
     h.ignore_emphasis = options.ignore_emphasis
     h.ignore_links = options.ignore_links
     h.ignore_images = options.ignore_images
+    h.no_markdown = options.no_markdown
     h.google_doc = options.google_doc
     h.hide_strikethrough = options.hide_strikethrough
     h.escape_snob = options.escape_snob

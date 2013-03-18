@@ -109,6 +109,10 @@ def run_all_tests():
             module_args['escape_snob'] = True
             cmdline_args.append('--escape-all')
 
+        if fn.lower().find('no_markdown') >= 0:
+            module_args['no_markdown'] = True
+            cmdline_args.append('--no-markdown')
+
         print('\n' + fn + ':')
         passing = passing and test_module(fn, **module_args)
 
