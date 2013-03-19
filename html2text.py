@@ -279,7 +279,7 @@ class HTML2Text(HTMLParser.HTMLParser):
     def handle(self, data):
         self.normalise_options()
         self.feed(data)
-        self.feed("") 
+        self.feed(" ") 
         return self.post_process(self.close())
 
     def outtextf(self, s):
@@ -744,8 +744,14 @@ class HTML2Text(HTMLParser.HTMLParser):
         if not self.unicode_snob and c in unifiable.keys():
             return unifiable[c]
         else:
-            try: name2cp(c)
-            except KeyError: return "&" + c + ';'
+            try: 
+                name2cp(c)
+            except KeyError: 
+                if self.no_markdown:
+                    # let original ampersand and character through
+                    return "&" + c
+                else:
+                    return "&" + c + ';'
             else:
                 try:
                     return unichr(name2cp(c))
